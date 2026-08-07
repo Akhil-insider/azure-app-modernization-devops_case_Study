@@ -26,45 +26,100 @@ variables:
     value: '$(System.DefaultWorkingDirectory)/Terraform/Environments/Prod'
   - name: AZURE_SERVICE_CONNECTION
     value: 'sc-azure-devops-prod'
+  # Set INFRACOST_API_KEY as a secret variable in Azure DevOps Pipeline UI
 
 stages:
-  - stage: Validate
-    displayName: 'Terraform Validate & Security Scan'
+  # ==========================================
+  # STAGE 1: PrecommitStage
+  # ==========================================
+  - stage: PrecommitStage
+    displayName: '1. Pre-Commit Validation & Security Scanning'
     jobs:
-      - job: ValidateJob
-        displayName: 'Validate & Lint'
+      - job: PrecommitJob
+        displayName: 'Format, Validate, TFLint & TFSec'
         steps:
           - task: HashiCorpTerraformInstaller@1
+            displayName: 'Install Terraform'
             inputs:
               terraformVersion: $(TERRAFORM_VERSION)
 
           - task: Bash@3
-            displayName: 'Terraform Init & Validate'
+            displayName: 'Terraform Init, Fmt & Validate'
             inputs:
               targetType: 'inline'
               workingDirectory: $(WORKING_DIRECTORY)
               script: |
-                echo "Initializing Terraform..."
+                echo "--> Initializing Terraform..."
                 terraform init -backend=false
-                echo "Validating Terraform code..."
+                
+                echo "--> Checking Code Formatting..."
+                terraform fmt -check -recursive
+                
+                echo "--> Validating Code Logic..."
                 terraform validate
 
           - task: Bash@3
-            displayName: 'Security Linting (TFSec)'
+            displayName: 'Run TFLint (Linter)'
             inputs:
               targetType: 'inline'
+              workingDirectory: $(WORKING_DIRECTORY)
               script: |
-                curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-                tfsec $(WORKING_DIRECTORY) --soft-fail
+                echo "--> Installing TFLint..."
+                curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+                tflint --init
+                echo "--> Running TFLint..."
+                tflint
 
-  - stage: Plan
-    displayName: 'Terraform Plan'
-    dependsOn: Validate
+          - task: Bash@3
+            displayName: 'Run TFSec (Security Scanner)'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(WORKING_DIRECTORY)
+              script: |
+                echo "--> Installing TFSec..."
+                curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+                echo "--> Running TFSec Scan..."
+                tfsec . --soft-fail
+
+  # ==========================================
+  # STAGE 2: InfraCostStage
+  # ==========================================
+  - stage: InfraCostStage
+    displayName: '2. FinOps InfraCost Analysis'
+    dependsOn: PrecommitStage
+    jobs:
+      - job: InfraCostJob
+        displayName: 'Calculate Infrastructure Cost Estimate'
+        steps:
+          - task: Bash@3
+            displayName: 'Install & Run InfraCost'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(WORKING_DIRECTORY)
+              script: |
+                echo "--> Installing InfraCost CLI..."
+                curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+                
+                echo "--> Generating Infracost Breakdown..."
+                if [ -z "$(INFRACOST_API_KEY)" ]; then
+                  echo "WARNING: INFRACOST_API_KEY not set. Running baseline estimate..."
+                  infracost breakdown --path . --format table
+                else
+                  infracost breakdown --path . --format table --api-key=$(INFRACOST_API_KEY)
+                fi
+
+  # ==========================================
+  # STAGE 3: PlanStage
+  # ==========================================
+  - stage: PlanStage
+    displayName: '3. Terraform Plan'
+    dependsOn: InfraCostStage
     jobs:
       - job: PlanJob
         displayName: 'Generate Execution Plan'
         steps:
           - task: HashiCorpTerraformInstaller@1
+            displayName: 'Install Terraform'
             inputs:
               terraformVersion: $(TERRAFORM_VERSION)
 
@@ -78,7 +133,6 @@ stages:
               inlineScript: |
                 terraform init
                 terraform plan -out=tfplan -input=false
-                terraform show -json tfplan > tfplan.json
 
           - task: PublishPipelineArtifact@1
             displayName: 'Publish TF Plan Artifact'
@@ -86,30 +140,55 @@ stages:
               targetPath: '$(WORKING_DIRECTORY)/tfplan'
               artifact: 'tfplan'
 
-  - stage: Apply
-    displayName: 'Terraform Apply'
-    dependsOn: Plan
+  # ==========================================
+  # STAGE 4: ManualValidationStage
+  # ==========================================
+  - stage: ManualValidationStage
+    displayName: '4. Manual Validation & Approval Gate'
+    dependsOn: PlanStage
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     jobs:
-      - deployment: ApplyJob
-        displayName: 'Apply Infrastructure Changes'
-        environment: 'Production' # Triggers Manual Approval Gate in Azure DevOps
+      - job: ManualValidationJob
+        displayName: 'Manual Review Approval'
+        pool: server # Agentless job required for ManualValidation task
+        steps:
+          - task: ManualValidation@0
+            displayName: 'Approve Infrastructure Deployment to Production'
+            inputs:
+              notifyUsers: 'admin@company.com'
+              instructions: 'Please review the Terraform plan and InfraCost report before approving production deployment.'
+              onTimeout: 'reject'
+              timeoutInMinutes: 1440 # 24 Hours timeout
+
+  # ==========================================
+  # STAGE 5: ApplyStage
+  # ==========================================
+  - stage: ApplyStage
+    displayName: '5. Terraform Apply'
+    dependsOn: ManualValidationStage
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyDeploymentJob
+        displayName: 'Deploy Infrastructure to Production'
+        environment: 'Production'
         strategy:
           runOnce:
             deploy:
               steps:
                 - task: HashiCorpTerraformInstaller@1
+                  displayName: 'Install Terraform'
                   inputs:
                     terraformVersion: $(TERRAFORM_VERSION)
 
                 - task: DownloadPipelineArtifact@1
+                  displayName: 'Download TF Plan Artifact'
                   inputs:
                     buildType: 'current'
                     artifactName: 'tfplan'
                     targetPath: '$(WORKING_DIRECTORY)'
 
                 - task: AzureCLI@2
-                  displayName: 'Terraform Apply'
+                  displayName: 'Terraform Apply Execution'
                   inputs:
                     azureSubscription: $(AZURE_SERVICE_CONNECTION)
                     scriptType: 'bash'

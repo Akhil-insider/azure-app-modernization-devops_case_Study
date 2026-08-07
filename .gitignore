@@ -8,8 +8,7 @@ crash.*.log
 tfplan
 tfplan.json
 
-# Ignore sensitive variable files (optional, keeping example tfvars if needed)
-# *.tfvars
+
 
 # System / IDE
 .idea/

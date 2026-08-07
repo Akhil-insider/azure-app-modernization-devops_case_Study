@@ -1,15 +1,20 @@
 graph TD
-    User([End User / Client]) --> Ingress[NGINX Ingress Controller]
+    User([End User / External Client]) --> AppGW[Azure Application Gateway / WAF]
+    AppGW --> AGIC[AGIC - Application Gateway Ingress Controller]
     
     subgraph VNet["Azure Virtual Network (10.100.0.0/16) - UAE North"]
         
+        subgraph AppGWSubnet["AppGW Subnet (10.100.48.0/24)"]
+            AppGW
+        end
+
         subgraph AKSSubnet["AKS Subnet (10.100.0.0/20)"]
             subgraph AKSCluster["AKS Production Cluster (Multi-AZ 1, 2, 3)"]
-                Ingress
+                AGIC
                 HPA[HPA - Horizontal Pod Autoscaler]
                 Microservice[Microservice Pods - order-service]
-                Ingress --> Microservice
-                HPA -. Scales .-> Microservice
+                AGIC -- Direct Pod Routing --> Microservice
+                HPA -. Dynamic Scaling .-> Microservice
             end
         end
 
