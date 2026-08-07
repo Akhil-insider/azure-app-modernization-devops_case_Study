@@ -21,7 +21,7 @@ pool:
 
 variables:
   - name: TERRAFORM_VERSION
-    value: '1.5.7'
+    value: '1.11.0'
   - name: WORKING_DIRECTORY
     value: '$(System.DefaultWorkingDirectory)/Terraform/Environments/Prod'
   - name: AZURE_SERVICE_CONNECTION
