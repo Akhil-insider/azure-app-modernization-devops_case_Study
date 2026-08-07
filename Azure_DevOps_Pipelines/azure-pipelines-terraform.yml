@@ -26,8 +26,7 @@ variables:
     value: '$(System.DefaultWorkingDirectory)/Terraform/Environments/Prod'
   - name: AZURE_SERVICE_CONNECTION
     value: 'sc-azure-devops-prod'
-  # Set INFRACOST_API_KEY as a secret variable in Azure DevOps Pipeline UI
-
+  
 stages:
   # ==========================================
   # STAGE 1: PrecommitStage
