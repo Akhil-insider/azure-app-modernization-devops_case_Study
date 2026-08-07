@@ -1,0 +1,120 @@
+name: $(Build.BuildId)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Terraform/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Terraform/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: TERRAFORM_VERSION
+    value: '1.5.7'
+  - name: WORKING_DIRECTORY
+    value: '$(System.DefaultWorkingDirectory)/Terraform/Environments/Prod'
+  - name: AZURE_SERVICE_CONNECTION
+    value: 'sc-azure-devops-prod'
+
+stages:
+  - stage: Validate
+    displayName: 'Terraform Validate & Security Scan'
+    jobs:
+      - job: ValidateJob
+        displayName: 'Validate & Lint'
+        steps:
+          - task: HashiCorpTerraformInstaller@1
+            inputs:
+              terraformVersion: $(TERRAFORM_VERSION)
+
+          - task: Bash@3
+            displayName: 'Terraform Init & Validate'
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(WORKING_DIRECTORY)
+              script: |
+                echo "Initializing Terraform..."
+                terraform init -backend=false
+                echo "Validating Terraform code..."
+                terraform validate
+
+          - task: Bash@3
+            displayName: 'Security Linting (TFSec)'
+            inputs:
+              targetType: 'inline'
+              script: |
+                curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+                tfsec $(WORKING_DIRECTORY) --soft-fail
+
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    dependsOn: Validate
+    jobs:
+      - job: PlanJob
+        displayName: 'Generate Execution Plan'
+        steps:
+          - task: HashiCorpTerraformInstaller@1
+            inputs:
+              terraformVersion: $(TERRAFORM_VERSION)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Plan'
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(WORKING_DIRECTORY)
+              inlineScript: |
+                terraform init
+                terraform plan -out=tfplan -input=false
+                terraform show -json tfplan > tfplan.json
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish TF Plan Artifact'
+            inputs:
+              targetPath: '$(WORKING_DIRECTORY)/tfplan'
+              artifact: 'tfplan'
+
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyJob
+        displayName: 'Apply Infrastructure Changes'
+        environment: 'Production' # Triggers Manual Approval Gate in Azure DevOps
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: HashiCorpTerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TERRAFORM_VERSION)
+
+                - task: DownloadPipelineArtifact@1
+                  inputs:
+                    buildType: 'current'
+                    artifactName: 'tfplan'
+                    targetPath: '$(WORKING_DIRECTORY)'
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(WORKING_DIRECTORY)
+                    inlineScript: |
+                      terraform init
+                      terraform apply -input=false tfplan

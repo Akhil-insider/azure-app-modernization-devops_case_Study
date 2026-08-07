@@ -1,0 +1,41 @@
+graph TD
+    User([End User / Client]) --> Ingress[NGINX Ingress Controller]
+    
+    subgraph VNet["Azure Virtual Network (10.100.0.0/16) - UAE North"]
+        
+        subgraph AKSSubnet["AKS Subnet (10.100.0.0/20)"]
+            subgraph AKSCluster["AKS Production Cluster (Multi-AZ 1, 2, 3)"]
+                Ingress
+                HPA[HPA - Horizontal Pod Autoscaler]
+                Microservice[Microservice Pods - order-service]
+                Ingress --> Microservice
+                HPA -. Scales .-> Microservice
+            end
+        end
+
+        subgraph AppServiceSubnet["App Service Subnet (10.100.16.0/24)"]
+            AppService[Azure App Service - P1v3]
+        end
+
+        subgraph PrivateEndpointSubnet["Private Endpoints Subnet (10.100.32.0/24)"]
+            ACR[Azure Container Registry - Premium Tier]
+            KeyVault[Azure Key Vault - Standard Tier]
+        end
+
+        subgraph Security["Network Security Groups (NSGs)"]
+            NSG_AKS[NSG - Dynamic Rules: 80, 443]
+            NSG_AppService[NSG - Dynamic Rules: 443]
+        end
+
+    end
+
+    subgraph Monitoring["Observability Suite"]
+        LAW[Log Analytics Workspace]
+        AppInsights[Application Insights]
+    end
+
+    Microservice -- Pull Images --> ACR
+    Microservice -- Fetch Secrets --> KeyVault
+    AKSCluster -- Metrics/Logs --> LAW
+    AppService -- Diagnostics --> AppInsights
+    AppService -- VNet Integration --> AppServiceSubnet

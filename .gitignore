@@ -1,0 +1,18 @@
+# Terraform local files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+tfplan
+tfplan.json
+
+# Ignore sensitive variable files (optional, keeping example tfvars if needed)
+# *.tfvars
+
+# System / IDE
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
